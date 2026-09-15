@@ -1,4 +1,4 @@
-# pulp
+# Pulp
 
 A fast, native PDF toolkit for the terminal.
 
