@@ -3,15 +3,44 @@ use ratatui::style::{Color, Modifier, Style};
 /// Dark slate / cyan aesthetic — OpenCode-inspired.
 /// Keep this as the single source of truth for colour.
 pub const SLATE: Color = Color::Rgb(100, 116, 139); // #64748B — hints, borders, muted
-pub const SLATE_DIM: Color = Color::Rgb(71, 85, 105); // #475569 — subtle variant
-pub const SLATE_300: Color = Color::Rgb(203, 213, 225); // #CBD5E1 — requested header color
+pub const SLATE_300: Color = Color::Rgb(203, 213, 225); // #CBD5E1 — header, bold hints
 pub const ACCENT: Color = Color::Rgb(56, 189, 248); // #38BDF8 — cyan highlight
-pub const ACCENT_DIM: Color = Color::Rgb(14, 165, 233); // #0EA5E9
 pub const TITLE: Color = Color::Rgb(248, 250, 252); // #F8FAFC — crisp white
 pub const RED: Color = Color::Rgb(248, 113, 113); // soft red for errors
 
-// Legacy aliases so existing code keeps compiling.
-pub const MUTED: Color = SLATE;
+/// Assumed page background used to blend the header's translucent shadow
+/// cells. Matches the dark slate backdrop the TUI draws over.
+pub const PAGE_BG: Color = Color::Rgb(11, 15, 25);
+
+/// Opencode's `theme.backgroundElement` — a subtle lighter-than-page fill
+/// behind prompt boxes and interactive areas. Roughly 3% white overlay on
+/// PAGE_BG; produces a barely-visible brightening of the region.
+pub const BG_ELEMENT: Color = Color::Rgb(16, 21, 32);
+
+// ---------------------------------------------------------------------------
+// Tint / shadow — used by the header mark system
+// ---------------------------------------------------------------------------
+
+/// OpenCode's `tint` — blend `overlay` toward `base` by `alpha` (0..=1).
+pub fn tint(base: Color, overlay: Color, alpha: f32) -> Color {
+    let mix = |b: u8, o: u8| (b as f32 + (o as f32 - b as f32) * alpha).round() as u8;
+    match (base, overlay) {
+        (Color::Rgb(br, bg, bb), Color::Rgb(or, og, ob)) => {
+            Color::Rgb(mix(br, or), mix(bg, og), mix(bb, ob))
+        }
+        _ => overlay,
+    }
+}
+
+/// Shadow tone for header glyph cells, mirroring `Logo()`:
+/// `shadow = tint(theme.background, fg, 0.25)`.
+pub fn shadow(fg: Color) -> Color {
+    tint(PAGE_BG, fg, 0.25)
+}
+
+// ---------------------------------------------------------------------------
+// Convenience styles — used by header, screens, status, footer
+// ---------------------------------------------------------------------------
 
 /// Accent (cyan) — highlights, selection marker, tip bullet.
 pub fn accent() -> Style {
@@ -35,32 +64,18 @@ pub fn muted_italic() -> Style {
     muted().add_modifier(Modifier::ITALIC)
 }
 
-/// Crisp white — titles and active/selected item.
-pub fn title() -> Style {
-    Style::new().fg(TITLE).add_modifier(Modifier::BOLD)
-}
-
-/// Requested header style — Slate 300 + BOLD (`Style::default().fg(Rgb(203,213,225)).add_modifier(BOLD)`).
+/// Requested header style — Slate 300 + BOLD.
 pub fn header() -> Style {
     Style::default()
         .fg(SLATE_300)
         .add_modifier(Modifier::BOLD)
 }
 
-pub fn primary_bold() -> Style {
-    title()
+pub fn error() -> Style {
+    Style::new().fg(RED)
 }
 
-/// Border style for the centered card.
-pub fn border() -> Style {
-    Style::new().fg(SLATE)
-}
-
-pub fn border_focused() -> Style {
-    Style::new().fg(SLATE)
-}
-
-/// Style for the currently selected list row: white bold.
+/// Style for the currently selected row: white bold.
 pub fn selected() -> Style {
     Style::new().fg(TITLE).add_modifier(Modifier::BOLD)
 }
@@ -70,6 +85,7 @@ pub fn highlight_marker() -> Style {
     Style::new().fg(ACCENT).add_modifier(Modifier::BOLD)
 }
 
-pub fn error() -> Style {
-    Style::new().fg(RED)
+/// Background element style — subtle fill behind the prompt box.
+pub fn bg_element() -> Style {
+    Style::new().bg(BG_ELEMENT)
 }

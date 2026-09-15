@@ -1,7 +1,8 @@
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
-use ratatui::layout::{Margin, Rect};
+use ratatui::layout::Rect;
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
+use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
 use crate::core::operation::Operation;
@@ -25,12 +26,10 @@ pub enum Screen {
 }
 
 // ---------------------------------------------------------------------------
-// Home — opencode header + horizontal action menu
+// Helpers — opencode-style prompt box
 // ---------------------------------------------------------------------------
 
-/// Short display names for the horizontal menu — matches the requested
-/// `Compress · Merge · Split · Remove · Extract · Password` (without
-/// the ` pages` suffix) to keep the `·` row under ~55 cols.
+/// Short display names for the horizontal menu.
 fn short_title(op: &Operation) -> &'static str {
     match op {
         Operation::Compress => "Compress",
@@ -43,7 +42,54 @@ fn short_title(op: &Operation) -> &'static str {
     }
 }
 
-/// Home: pick an operation via the horizontal `·` menu.
+/// Render the opencode-style prompt box: left-only `┃` border in accent,
+/// filled with `backgroundElement`, content rendered inside.
+///
+/// `box_h` must include room for the left border rows. Inner content is
+/// placed at `x + 3, y + 1` with width `box_w - 5` and height `box_h - 2`.
+/// Returns the area of the inner content region.
+fn render_prompt_box(frame: &mut Frame, box_area: Rect) -> Rect {
+    let w = box_area.width as usize;
+    let h = box_area.height as usize;
+    if w == 0 || h == 0 {
+        return box_area;
+    }
+
+    // 1) Fill entire area with backgroundElement (each row = w spaces)
+    let fill: String = " ".repeat(w);
+    let bg_lines: Vec<Line> = (0..h)
+        .map(|_| Line::from(Span::styled(fill.as_str(), theme::bg_element())))
+        .collect();
+    frame.render_widget(Paragraph::new(bg_lines), box_area);
+
+    // 2) Left border — `┃` in accent colour, one per row
+    let accent = Style::new().fg(theme::ACCENT).add_modifier(Modifier::BOLD);
+    let border_lines: Vec<Line> = (0..h)
+        .map(|_| Line::from(Span::styled("┃", accent.clone())))
+        .collect();
+    frame.render_widget(
+        Paragraph::new(border_lines),
+        Rect {
+            x: box_area.x,
+            y: box_area.y,
+            width: 1,
+            height: box_area.height,
+        },
+    );
+
+    // 3) Return inner area (padded: x+3 for left pad, y+1 for top pad)
+    Rect {
+        x: box_area.x + 3,
+        y: box_area.y + 1,
+        width: box_area.width.saturating_sub(5),
+        height: box_area.height.saturating_sub(2),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Home — opencode header + prompt box with horizontal operation menu
+// ---------------------------------------------------------------------------
+
 #[derive(Debug)]
 pub struct HomeScreen {
     list: NavList<Operation>,
@@ -78,22 +124,18 @@ impl HomeScreen {
         }
 
         let header_h = header::height_for(area);
-        // New menu card: 2 content rows + borders = 4 (was 11 for vertical list)
-        // Width must fit the `·` row (~54 for 6 items, ~61 with Info)
-        let ops_line = self.operations_line_len() as u16;
-        let prompt_len: u16 = "▌ Select action.. (or search)".len() as u16;
-        let inner_needed = ops_line.max(prompt_len).saturating_add(4); // 2 left + 2 right padding
-        let card_width: u16 = (inner_needed + 2).min(area.width.saturating_sub(4)).max(40);
-        let card_height: u16 = 4; // 1 top border + 2 rows + 1 bottom border
+        let box_w: u16 = 75.min(area.width.saturating_sub(4));
+        // Inner: placeholder row + operations row = 2 content rows + 2 padding = 4
+        let box_h: u16 = 4;
         let hint_h: u16 = 1;
         let tip_h: u16 = 1;
 
         let stack_h = header_h
-            .saturating_add(1)
-            .saturating_add(card_height)
-            .saturating_add(1) // gap to hints
+            .saturating_add(1) // gap after header
+            .saturating_add(box_h)
+            .saturating_add(1) // gap after box
             .saturating_add(hint_h)
-            .saturating_add(2)
+            .saturating_add(2) // gap before tip
             .saturating_add(tip_h);
 
         let start_y = if area.height > stack_h {
@@ -101,10 +143,10 @@ impl HomeScreen {
         } else {
             area.y
         };
-        let card_x = area.x + (area.width.saturating_sub(card_width)) / 2;
+        let box_x = area.x + (area.width.saturating_sub(box_w)) / 2;
         let mut y = start_y;
 
-        // ── Header (opencode-style PULP, centered) ──
+        // ── Header (opencode-style PULP) ──
         let header_area = Rect {
             x: area.x,
             y,
@@ -112,97 +154,101 @@ impl HomeScreen {
             height: header_h.min(area.height.saturating_sub(y - area.y)),
         };
         header::render(frame, header_area);
-        y = y.saturating_add(header_h).saturating_add(1);
+        y = y.saturating_add(header_h + 1);
 
-        // ── Card (centered, rounded borders, 2 rows inside) ──
-        if y + card_height <= area.y + area.height {
-            let card_area = Rect {
-                x: card_x,
+        // ── Prompt box (opencode left-border + bg fill) ──
+        if y + box_h <= area.y + area.height {
+            let box_area = Rect {
+                x: box_x,
                 y,
-                width: card_width,
-                height: card_height,
+                width: box_w,
+                height: box_h,
             };
-            let block = Block::default()
-                .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
-                .border_style(theme::border());
-            frame.render_widget(block, card_area);
+            let inner = render_prompt_box(frame, box_area);
 
-            let inner = card_area.inner(Margin {
-                vertical: 1,
-                horizontal: 2,
-            });
-            if inner.width > 0 && inner.height >= 2 {
-                // Row 0: prompt `▌ Select action.. (or search)` — ▌ in cyan, rest muted italic
-                let prompt_area = Rect {
-                    x: inner.x,
-                    y: inner.y,
-                    width: inner.width,
-                    height: 1,
-                };
+            // Row 0: placeholder-like prompt
+            if inner.height >= 1 {
                 let prompt_line = Line::from(vec![
-                    Span::styled("▌ ", theme::accent_bold()),
-                    Span::styled("Select action.. (or search)", theme::muted_italic()),
+                    Span::styled("▌ ", Style::new().fg(theme::ACCENT).add_modifier(Modifier::BOLD)),
+                    Span::styled(
+                        "Ask anything… or choose an operation",
+                        Style::new().fg(theme::SLATE),
+                    ),
                 ]);
-                frame.render_widget(Paragraph::new(prompt_line), prompt_area);
+                frame.render_widget(
+                    Paragraph::new(prompt_line),
+                    Rect {
+                        x: inner.x,
+                        y: inner.y,
+                        width: inner.width,
+                        height: 1,
+                    },
+                );
+            }
 
-                // Row 1: horizontal `·` menu — `Compress · Merge · …`
-                let ops_area = Rect {
-                    x: inner.x,
-                    y: inner.y + 1,
-                    width: inner.width,
-                    height: 1,
-                };
-                // Indent 1-2 cols like the spec's `"   Compress · …"`
-                let indent = "  ";
-                let mut spans: Vec<Span> = vec![Span::raw(indent)];
+            // Row 1: horizontal `·` menu
+            if inner.height >= 2 {
                 let selected = self.list.selected().copied();
+                let mut spans: Vec<Span> = vec![];
                 for (idx, op) in Operation::ALL.iter().enumerate() {
                     if idx > 0 {
-                        spans.push(Span::styled(" · ", theme::muted()));
+                        spans.push(Span::styled(" · ", Style::new().fg(theme::SLATE)));
                     }
                     let title = short_title(op);
-                    let is_selected = Some(*op) == selected;
-                    let style = if is_selected {
-                        theme::selected()
+                    let style = if Some(*op) == selected {
+                        Style::new()
+                            .fg(theme::TITLE)
+                            .add_modifier(Modifier::BOLD)
                     } else {
-                        theme::muted()
+                        Style::new().fg(theme::SLATE)
                     };
-                    spans.push(Span::styled(title.to_string(), style));
+                    spans.push(Span::styled(title, style));
                 }
-                // If inner is narrower than ops line, truncate is handled by Paragraph
-                frame.render_widget(Paragraph::new(Line::from(spans)), ops_area);
+                let ops_line = Line::from(spans);
+                frame.render_widget(
+                    Paragraph::new(ops_line),
+                    Rect {
+                        x: inner.x,
+                        y: inner.y + 1,
+                        width: inner.width,
+                        height: 1,
+                    },
+                );
             }
-            y = y.saturating_add(card_height).saturating_add(1);
+
+            y = y.saturating_add(box_h + 1);
         }
 
-        // ── Hints — right-aligned under the card (as in the requested ascii)
+        // ── Hints (right-aligned) ──
         if y + hint_h <= area.y + area.height {
-            // Align hints' right edge with the card's right edge, like
-            // `                                         ↑↓ select  enter run`
-            let hint_text = "↑↓ select  enter run";
-            let hint_width = hint_text.len() as u16;
-            let hint_x = card_x
-                .saturating_add(card_width)
-                .saturating_sub(hint_width);
+            let hint_text = "↑↓ select  enter run  q quit";
+            let hint_w = hint_text.len() as u16;
+            let hint_x = box_x
+                .saturating_add(box_w)
+                .saturating_sub(hint_w)
+                .max(area.x);
             let hint_area = Rect {
                 x: hint_x,
                 y,
-                width: hint_width.min(area.width.saturating_sub(hint_x - area.x)),
+                width: hint_w.min(area.width.saturating_sub(hint_x.saturating_sub(area.x))),
                 height: hint_h,
             };
-            // Render as muted with keys in bold, right-aligned
             let hint_line = Line::from(vec![
-                Span::styled("↑↓", theme::muted_bold()),
-                Span::styled(" select  ", theme::muted()),
-                Span::styled("enter", theme::muted_bold()),
-                Span::styled(" run", theme::muted()),
+                Span::styled("↑↓", Style::new().fg(theme::SLATE_300).add_modifier(Modifier::BOLD)),
+                Span::styled(" select  ", Style::new().fg(theme::SLATE)),
+                Span::styled("enter", Style::new().fg(theme::SLATE_300).add_modifier(Modifier::BOLD)),
+                Span::styled(" run  ", Style::new().fg(theme::SLATE)),
+                Span::styled("q", Style::new().fg(theme::SLATE_300).add_modifier(Modifier::BOLD)),
+                Span::styled(" quit", Style::new().fg(theme::SLATE)),
             ]);
-            frame.render_widget(Paragraph::new(hint_line).right_aligned(), hint_area);
-            y = y.saturating_add(hint_h).saturating_add(2);
+            frame.render_widget(
+                Paragraph::new(hint_line).right_aligned(),
+                hint_area,
+            );
+            y = y.saturating_add(hint_h + 2);
         }
 
-        // ── Tip line (centered, cyan bullet) ──
+        // ── Tip (centered, cyan bullet) ──
         if y + tip_h <= area.y + area.height {
             let tip_area = Rect {
                 x: area.x,
@@ -211,40 +257,22 @@ impl HomeScreen {
                 height: tip_h,
             };
             let tip = Line::from(vec![
-                Span::styled("• ", theme::accent_bold()),
-                Span::styled("Tip: ", theme::muted_bold()),
+                Span::styled("• ", Style::new().fg(theme::ACCENT).add_modifier(Modifier::BOLD)),
+                Span::styled("Tip: ", Style::new().fg(theme::SLATE).add_modifier(Modifier::BOLD)),
                 Span::styled(
                     "Drag and drop a PDF file or pass a path as an argument",
-                    theme::muted(),
+                    Style::new().fg(theme::SLATE),
                 ),
             ]);
             frame.render_widget(Paragraph::new(tip).centered(), tip_area);
         }
     }
-
-    fn operations_line_len(&self) -> usize {
-        // "Compress · Merge · Split · Remove · Extract · Password · Info"
-        // with " · " separators, plus indent
-        let titles: Vec<&str> = Operation::ALL.iter().map(|op| short_title(op)).collect();
-        let sep = " · ".len();
-        let mut len = 2; // indent "  "
-        for (i, t) in titles.iter().enumerate() {
-            if i > 0 {
-                len += sep;
-            }
-            len += t.len();
-        }
-        len
-    }
 }
 
 // ---------------------------------------------------------------------------
-// Operation placeholder — also centered, same card chrome.
+// Operation placeholder — same left-border box, centered.
 // ---------------------------------------------------------------------------
 
-/// Placeholder screen for an operation. Real operation screens replace
-/// this in later phases; for now it sets up the breadcrumb, status and
-/// navigation pattern every operation will follow.
 #[derive(Debug)]
 pub struct OperationScreen {
     pub operation: Operation,
@@ -272,91 +300,84 @@ impl OperationScreen {
             return;
         }
 
-        let card_width: u16 = 52.min(area.width.saturating_sub(4));
-        let card_height: u16 = 9.min(area.height);
-        let header_h = 1u16;
+        let box_w: u16 = 52.min(area.width.saturating_sub(4));
+        let box_h: u16 = 7;
         let hint_h: u16 = 1;
 
-        let stack_h = header_h
-            .saturating_add(1)
-            .saturating_add(card_height)
-            .saturating_add(1)
-            .saturating_add(hint_h);
-
+        let stack_h = box_h.saturating_add(1).saturating_add(hint_h);
         let start_y = if area.height > stack_h {
             area.y + (area.height - stack_h) / 2
         } else {
             area.y
         };
-
-        let card_x = area.x + (area.width.saturating_sub(card_width)) / 2;
+        let box_x = area.x + (area.width.saturating_sub(box_w)) / 2;
         let mut y = start_y;
 
-        let header_area = Rect {
-            x: card_x,
+        // ── Breadcrumb ──
+        let breadcrumb_area = Rect {
+            x: box_x,
             y,
-            width: card_width,
-            height: header_h,
+            width: box_w,
+            height: 1,
         };
-        header::breadcrumb_render(frame, header_area, Some(self.operation.slug()));
-        y = y.saturating_add(header_h).saturating_add(1);
+        header::breadcrumb_render(frame, breadcrumb_area, Some(self.operation.slug()));
+        y += 2;
 
-        if y + card_height <= area.y + area.height {
-            let card_area = Rect {
-                x: card_x,
+        // ── Prompt box (left-border + bg fill) ──
+        if y + box_h <= area.y + area.height {
+            let box_area = Rect {
+                x: box_x,
                 y,
-                width: card_width,
-                height: card_height,
+                width: box_w,
+                height: box_h,
             };
-            let block = Block::default()
-                .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
-                .border_style(theme::border());
-            frame.render_widget(block, card_area);
+            let inner = render_prompt_box(frame, box_area);
 
-            let inner = card_area.inner(Margin {
-                vertical: 1,
-                horizontal: 2,
-            });
-
-            if inner.height >= 4 {
-                let title_area = Rect {
-                    x: inner.x,
-                    y: inner.y,
-                    width: inner.width,
-                    height: 1,
-                };
-                let desc_area = Rect {
-                    x: inner.x,
-                    y: inner.y + 1,
-                    width: inner.width,
-                    height: 1,
-                };
-                let status_area = Rect {
-                    x: inner.x,
-                    y: inner.y + 3,
-                    width: inner.width,
-                    height: 1,
-                };
+            if inner.height >= 3 {
+                // Row 0: operation title
                 frame.render_widget(
                     Paragraph::new(Line::styled(
                         self.operation.title(),
-                        theme::primary_bold(),
+                        Style::new().fg(theme::TITLE).add_modifier(Modifier::BOLD),
                     )),
-                    title_area,
+                    Rect {
+                        x: inner.x,
+                        y: inner.y,
+                        width: inner.width,
+                        height: 1,
+                    },
                 );
+
+                // Row 1: operation description
                 frame.render_widget(
                     Paragraph::new(Line::styled(
                         self.operation.description(),
-                        theme::muted_italic(),
+                        Style::new().fg(theme::SLATE),
                     )),
-                    desc_area,
+                    Rect {
+                        x: inner.x,
+                        y: inner.y + 1,
+                        width: inner.width,
+                        height: 1,
+                    },
                 );
-                self.status.render(frame, status_area);
+
+                // Row 3: status
+                self.status.render(
+                    frame,
+                    Rect {
+                        x: inner.x,
+                        y: inner.y + 3,
+                        width: inner.width,
+                        height: 1,
+                    },
+                );
             }
-            y = y.saturating_add(card_height).saturating_add(1);
+
+            y = y.saturating_add(box_h + 1);
         }
 
+        // ── Hints ──
         if y + hint_h <= area.y + area.height {
             let hint_area = Rect {
                 x: area.x,

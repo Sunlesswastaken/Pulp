@@ -157,8 +157,8 @@ mod tests {
             "home screen missing block ASCII header (expected █ or PULP)"
         );
         assert!(
-            text.contains("Select action"),
-            "home screen missing `Select action..` prompt"
+            text.contains("Ask anything") || text.contains("Select action"),
+            "home screen missing prompt text"
         );
         assert!(text.contains('·'), "home screen missing `·` separator in horizontal menu");
         for expected in [
@@ -230,6 +230,16 @@ mod tests {
         app.handle_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE));
         assert!(app.should_quit);
     }
+
+
+
+
+
+
+
+
+
+
 
 
 

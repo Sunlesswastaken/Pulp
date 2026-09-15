@@ -1,44 +1,69 @@
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
 use crate::tui::theme;
 
-/// Opencode-style PULP title — copies `https://github.com/anomalyco/opencode`
-/// exactly: 4-row block font, left part muted, right part bold, gap 1,
-/// with drop-shadow using `tint(background, fg, 0.25)`.
+/// Opencode-style PULP title — ports `https://github.com/anomalyco/opencode`
+/// `packages/tui/src/log.ts` + `component/logo.tsx` faithfully:
+/// 4-row grid, left layer muted, right layer Slate 300 BOLD, gap 1, and the
+/// four "mark" characters that fake translucency / inner shadow:
 ///
 /// ```text
-///  left (muted)      right (Slate 300 bold)
-///  "         "      "         "         ← row0 shadow offset (empty)
-///  "█▀▀█ █  █"      "█    █▀▀█"         ← row1 top
-///  "█  █ █  █"      "█    █  █"         ← row2 mid
-///  "█▀▀▀ ▀▀▀▀"      "▀▀▀▀ █▀▀▀"         ← row3 bottom (P bar restored — no cutoff)
+/// `_`  → " "  with `tint(background, fg, 0.25)` background  (inner shadow fill)
+/// `^`  → ▀    fg on shadow background                       (lit top bevel)
+/// `~`  → ▀    entirely shadow colour                        (ghost top)
+/// `,`  → ▄    entirely shadow colour                        (ghost bottom)
 /// ```
-/// Combined width = left_w (9) + gap (1) + right_w (9) = 19, height = 4.
-/// Rendered centered; row0 is empty but keeps the 1-px shadow offset
-/// identical to opencode's `logo.ts`.
+///
+/// Left (muted "PU") and bright (right Slate 300 bold "LP") halves laid side
+/// by side with gap 1, exactly like `logo.tsx`. Marks copied one-to-one from
+/// opencode's conventions — hollow faces get the `_` inner-shadow fill:
+///
+/// ```text
+///  left (muted "PU")    right (Slate 300 bold "LP")
+///  "         "         "         "     ← row0 empty (shadow offset)
+///  "█▀▀█ █  █"         "█    █▀▀█"     ← row1 top bars
+///  "█__█ █__█"         "█    █__█"     ← row2 `_` = inner shadow (bowl/cup)
+///  "█▀▀▀ ▀▀▀▀"         "▀▀▀▀ █▀▀▀"     ← row3 bottom bars
+/// ```
 const PULP_LEFT: [&str; 4] = [
     "         ",
     "█▀▀█ █  █",
-    "█  █ █  █",
+    "█__█ █__█",
     "█▀▀▀ ▀▀▀▀",
 ];
 
 const PULP_RIGHT: [&str; 4] = [
     "         ",
     "█    █▀▀█",
-    "█    █  █",
+    "█    █__█",
     "▀▀▀▀ █▀▀▀",
 ];
 
 const PULP_MINI: &str = "PULP";
 
+/// Execute-step for one 9-col layer, mirroring `Logo.renderLine`:
+/// `_` → shadow-bg space, `^` → ▀ on shadow-bg, `~`/`,` → plain shadow glyph.
+fn render_line(line: &str, fg: Style, shadow: Color) -> Vec<Span<'static>> {
+    line.chars()
+        .map(|c| match c {
+            '_' => Span::styled(" ", fg.clone().bg(shadow)),
+            '^' => Span::styled("▀", fg.clone().bg(shadow)),
+            '~' => Span::styled("▀", Style::new().fg(shadow)),
+            ',' => Span::styled("▄", Style::new().fg(shadow)),
+            other => Span::styled(other.to_string(), fg.clone()),
+        })
+        .collect()
+}
+
 pub fn render(frame: &mut Frame, area: Rect) {
-    let header_left_style = theme::muted(); // textMuted — #64748B / #808080
-    let header_right_style = theme::header(); // Slate 300 #CBD5E1 + BOLD as requested
+    let header_left_style = theme::muted(); // textMuted — #64748B
+    let header_right_style = theme::header(); // Slate 300 #CBD5E1 + BOLD
+    let shadow_left = theme::shadow(theme::SLATE);
+    let shadow_right = theme::shadow(theme::SLATE_300);
 
     let block_w = 19u16; // 9 + 1 + 9
     let block_h = 4u16;
@@ -49,27 +74,19 @@ pub fn render(frame: &mut Frame, area: Rect) {
         return;
     }
 
-    // Build 4 lines: left (muted) + gap + right (bold Slate 300)
-    // For opencode fidelity, bottom row shadow (`▀`/`▄`) would use
-    // `tint(background, fg, 0.25)` as bg. We approximate with dim slate
-    // for the shadow bg by rendering those cells with `theme::muted()` bg
-    // tint — here simplified to same fg but Paragraph will handle.
     let mut lines: Vec<Line> = Vec::with_capacity(4);
     for i in 0..4 {
-        let left = PULP_LEFT[i];
-        let right = PULP_RIGHT[i];
-        // Gap of 1 cell between left and right, as in `logo.tsx` gap={1}
-        let line = Line::from(vec![
-            Span::styled(left, header_left_style),
-            Span::raw(" "),
-            Span::styled(right, header_right_style),
-        ]);
-        lines.push(line);
+        let left = render_line(PULP_LEFT[i], header_left_style.clone(), shadow_left.clone());
+        let right = render_line(PULP_RIGHT[i], header_right_style.clone(), shadow_right.clone());
+        // left (9) + gap (1) + right (9) = 19, as `logo.tsx` gap={1}.
+        let mut spans = left;
+        spans.push(Span::raw(" "));
+        spans.extend(right);
+        lines.push(Line::from(spans));
     }
 
-    // Center the 19×4 block as a whole. Using Paragraph::centered() will
-    // center each line individually, but since all lines are same width (19),
-    // the block stays aligned — no per-line offset.
+    // All lines are the same width (19), so Paragraph::centered() keeps the
+    // block aligned as a whole.
     frame.render_widget(Paragraph::new(lines).centered(), area);
 }
 

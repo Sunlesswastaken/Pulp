@@ -18,10 +18,10 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
-use ratatui::layout::{Margin, Rect};
+use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, ListState, Paragraph};
+use ratatui::widgets::{ListState, Paragraph};
 use ratatui::{DefaultTerminal, Frame};
 
 // ---------------------------------------------------------------------------
@@ -31,6 +31,35 @@ const SLATE: Color = Color::Rgb(100, 116, 139); // #64748B
 const SLATE_300: Color = Color::Rgb(203, 213, 225); // #CBD5E1 — requested header
 const WHITE: Color = Color::Rgb(248, 250, 252); // #F8FAFC
 const CYAN: Color = Color::Rgb(56, 189, 248); // #38BDF8
+const PAGE_BG: Color = Color::Rgb(11, 15, 25); // assumed page background
+
+/// OpenCode `tint` — blend `overlay` toward `base` by `alpha` (0..=1).
+fn tint(base: Color, overlay: Color, alpha: f32) -> Color {
+    let mix = |b: u8, o: u8| (b as f32 + (o as f32 - b as f32) * alpha).round() as u8;
+    match (base, overlay) {
+        (Color::Rgb(br, bg, bb), Color::Rgb(or, og, ob)) => {
+            Color::Rgb(mix(br, or), mix(bg, og), mix(bb, ob))
+        }
+        _ => overlay,
+    }
+}
+
+fn shadow(fg: Color) -> Color {
+    tint(PAGE_BG, fg, 0.25)
+}
+
+/// Render one header layer with mark chars, mirroring opencode `Logo.renderLine`.
+fn header_layer(line: &str, fg: Style, shadow: Color) -> Vec<Span<'static>> {
+    line.chars()
+        .map(|c| match c {
+            '_' => Span::styled(" ", fg.clone().bg(shadow)),
+            '^' => Span::styled("▀", fg.clone().bg(shadow)),
+            '~' => Span::styled("▀", Style::default().fg(shadow)),
+            ',' => Span::styled("▄", Style::default().fg(shadow)),
+            other => Span::styled(other.to_string(), fg.clone()),
+        })
+        .collect()
+}
 
 fn muted() -> Style {
     Style::default().fg(SLATE)
@@ -41,9 +70,6 @@ fn muted_bold() -> Style {
 fn accent_bold() -> Style {
     Style::default().fg(CYAN).add_modifier(Modifier::BOLD)
 }
-fn title_style() -> Style {
-    Style::default().fg(WHITE).add_modifier(Modifier::BOLD)
-}
 fn header_style() -> Style {
     Style::default()
         .fg(SLATE_300)
@@ -51,9 +77,6 @@ fn header_style() -> Style {
 }
 fn selected_style() -> Style {
     Style::default().fg(WHITE).add_modifier(Modifier::BOLD)
-}
-fn border_style() -> Style {
-    Style::default().fg(SLATE)
 }
 
 // ---------------------------------------------------------------------------
@@ -70,10 +93,10 @@ const OPERATIONS: [&str; 7] = [
 ];
 
 // Opencode-style PULP — 4×19 block, left muted / right Slate 300 + gap 1
-// Mirrors https://github.com/anomalyco/opencode `packages/tui/src/logo.ts`
-// Bottom row uses "█▀▀▀" for P so stem isn't cutoff
-const PULP_LEFT: [&str; 4] = ["         ", "█▀▀█ █  █", "█  █ █  █", "█▀▀▀ ▀▀▀▀"];
-const PULP_RIGHT: [&str; 4] = ["         ", "█    █▀▀█", "█    █  █", "▀▀▀▀ █▀▀▀"];
+// Mirrors https://github.com/anomalyco/opencode `packages/tui/src/logo.ts`.
+// `_` → soft inner-shadow fill (tint 25%), no hard bevel lines.
+const PULP_LEFT: [&str; 4] = ["         ", "█▀▀█ █  █", "█__█ █__█", "█▀▀▀ ▀▀▀▀"];
+const PULP_RIGHT: [&str; 4] = ["         ", "█    █▀▀█", "█    █__█", "▀▀▀▀ █▀▀▀"];
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -190,24 +213,8 @@ fn render(app: &App, frame: &mut Frame) {
     } else {
         4
     };
-    // Horizontal menu card — 2 rows + borders = 4
-    let ops_line: u16 = {
-        // short titles like the requested "Compress · Merge · …"
-        let shorts = ["Compress", "Merge", "Split", "Remove", "Extract", "Password", "Info"];
-        let mut len = 2; // indent "  "
-        for (i, s) in shorts.iter().enumerate() {
-            if i > 0 {
-                len += 3; // " · "
-            }
-            len += s.len();
-        }
-        len as u16
-    };
-    let prompt_len: u16 = "▌ Select action.. (or search)".len() as u16;
-    let inner_needed = ops_line.max(prompt_len).saturating_add(4);
-    let card_width: u16 = (inner_needed + 2)
-        .min(content_area.width.saturating_sub(4))
-        .max(40);
+    // Horizontal menu card — opencode-style: left-border prompt box, 4 tall
+    let card_width: u16 = 75.min(content_area.width.saturating_sub(4));
     let card_height: u16 = 4;
     let hint_h: u16 = 1;
     let tip_h: u16 = 1;
@@ -237,18 +244,17 @@ fn render(app: &App, frame: &mut Frame) {
     } else {
         let lines: Vec<Line> = (0..4)
             .map(|i| {
-                Line::from(vec![
-                    Span::styled(PULP_LEFT[i], muted()),
-                    Span::raw(" "),
-                    Span::styled(PULP_RIGHT[i], header_style()),
-                ])
+                let mut spans = header_layer(PULP_LEFT[i], muted(), shadow(SLATE));
+                spans.push(Span::raw(" "));
+                spans.extend(header_layer(PULP_RIGHT[i], header_style(), shadow(SLATE_300)));
+                Line::from(spans)
             })
             .collect();
         frame.render_widget(Paragraph::new(lines).centered(), header_area);
     }
     y += header_h + 1;
 
-    // Card — centered, rounded borders, 2 rows: prompt + horizontal · menu
+    // Card — opencode prompt box: left `┃` border + backgroundElement fill
     if y + card_height <= content_area.y + content_area.height {
         let card_area = Rect {
             x: card_x,
@@ -256,16 +262,34 @@ fn render(app: &App, frame: &mut Frame) {
             width: card_width,
             height: card_height,
         };
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .border_style(border_style());
-        frame.render_widget(block, card_area);
 
-        let inner = card_area.inner(Margin {
-            vertical: 1,
-            horizontal: 2,
-        });
+        // Background fill (backgroundElement)
+        let fill = " ".repeat(card_width as usize);
+        let bg_lines: Vec<Line> = (0..card_height as usize)
+            .map(|_| Line::from(Span::styled(fill.as_str(), Style::default().bg(PAGE_BG))))
+            .collect();
+        frame.render_widget(Paragraph::new(bg_lines), card_area);
+
+        // Left border
+        let border_lines: Vec<Line> = (0..card_height as usize)
+            .map(|_| Line::from(Span::styled("┃", Style::default().fg(CYAN).add_modifier(Modifier::BOLD))))
+            .collect();
+        frame.render_widget(
+            Paragraph::new(border_lines),
+            Rect {
+                x: card_area.x,
+                y: card_area.y,
+                width: 1,
+                height: card_area.height,
+            },
+        );
+
+        let inner = Rect {
+            x: card_area.x + 3,
+            y: card_area.y + 1,
+            width: card_width.saturating_sub(5),
+            height: card_area.height.saturating_sub(2),
+        };
         if inner.width > 0 && inner.height >= 2 {
             let prompt_area = Rect {
                 x: inner.x,
@@ -275,7 +299,7 @@ fn render(app: &App, frame: &mut Frame) {
             };
             let prompt_line = Line::from(vec![
                 Span::styled("▌ ", accent_bold()),
-                Span::styled("Select action.. (or search)", muted()),
+                Span::styled("Ask anything… or choose an operation", muted()),
             ]);
             frame.render_widget(Paragraph::new(prompt_line), prompt_area);
 
