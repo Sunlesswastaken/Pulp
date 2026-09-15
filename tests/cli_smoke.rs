@@ -9,7 +9,9 @@ fn help_mentions_every_operation() {
     let output = pulp().arg("--help").output().unwrap();
     assert!(output.status.success());
     let text = String::from_utf8_lossy(&output.stdout);
-    for op in ["compress", "merge", "split", "remove", "extract", "password", "info"] {
+    for op in [
+        "compress", "merge", "split", "remove", "extract", "password", "info",
+    ] {
         assert!(text.contains(op), "--help should mention `{op}`");
     }
 }

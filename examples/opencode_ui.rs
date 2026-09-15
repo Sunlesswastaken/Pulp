@@ -25,13 +25,15 @@ use ratatui::widgets::{ListState, Paragraph};
 use ratatui::{DefaultTerminal, Frame};
 
 // ---------------------------------------------------------------------------
-// Theme — exact hex values from the spec
+// Theme — opencode's bundled default (`assets/opencode.json`, dark side)
 // ---------------------------------------------------------------------------
-const SLATE: Color = Color::Rgb(100, 116, 139); // #64748B
-const SLATE_300: Color = Color::Rgb(203, 213, 225); // #CBD5E1 — requested header
-const WHITE: Color = Color::Rgb(248, 250, 252); // #F8FAFC
-const CYAN: Color = Color::Rgb(56, 189, 248); // #38BDF8
-const PAGE_BG: Color = Color::Rgb(11, 15, 25); // assumed page background
+const SLATE: Color = Color::Rgb(0x80, 0x80, 0x80); // textMuted #808080
+const SLATE_300: Color = Color::Rgb(0xee, 0xee, 0xee); // text #EEEEEE — bold header
+const WHITE: Color = Color::Rgb(0xee, 0xee, 0xee); // text #EEEEEE
+const WARNING: Color = Color::Rgb(0xf5, 0xa7, 0x42); // warning #F5A742 — tip marker
+const ACCENT: Color = Color::Rgb(0x9d, 0x7c, 0xd8); // accent #9D7CD8 — prompt strip
+const PAGE_BG: Color = Color::Rgb(0x0a, 0x0a, 0x0a); // background #0A0A0A
+const BG_ELEMENT: Color = Color::Rgb(0x1e, 0x1e, 0x1e); // backgroundElement #1E1E1E
 
 /// OpenCode `tint` — blend `overlay` toward `base` by `alpha` (0..=1).
 fn tint(base: Color, overlay: Color, alpha: f32) -> Color {
@@ -52,11 +54,11 @@ fn shadow(fg: Color) -> Color {
 fn header_layer(line: &str, fg: Style, shadow: Color) -> Vec<Span<'static>> {
     line.chars()
         .map(|c| match c {
-            '_' => Span::styled(" ", fg.clone().bg(shadow)),
-            '^' => Span::styled("▀", fg.clone().bg(shadow)),
+            '_' => Span::styled(" ", fg.bg(shadow)),
+            '^' => Span::styled("▀", fg.bg(shadow)),
             '~' => Span::styled("▀", Style::default().fg(shadow)),
             ',' => Span::styled("▄", Style::default().fg(shadow)),
-            other => Span::styled(other.to_string(), fg.clone()),
+            other => Span::styled(other.to_string(), fg),
         })
         .collect()
 }
@@ -67,13 +69,8 @@ fn muted() -> Style {
 fn muted_bold() -> Style {
     Style::default().fg(SLATE).add_modifier(Modifier::BOLD)
 }
-fn accent_bold() -> Style {
-    Style::default().fg(CYAN).add_modifier(Modifier::BOLD)
-}
 fn header_style() -> Style {
-    Style::default()
-        .fg(SLATE_300)
-        .add_modifier(Modifier::BOLD)
+    Style::default().fg(SLATE_300).add_modifier(Modifier::BOLD)
 }
 fn selected_style() -> Style {
     Style::default().fg(WHITE).add_modifier(Modifier::BOLD)
@@ -162,9 +159,7 @@ fn run(terminal: &mut DefaultTerminal) -> io::Result<()> {
                 if !matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
                     continue;
                 }
-                if key.modifiers.contains(KeyModifiers::CONTROL)
-                    && key.code == KeyCode::Char('c')
-                {
+                if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
                     app.should_quit = true;
                     continue;
                 }
@@ -246,7 +241,11 @@ fn render(app: &App, frame: &mut Frame) {
             .map(|i| {
                 let mut spans = header_layer(PULP_LEFT[i], muted(), shadow(SLATE));
                 spans.push(Span::raw(" "));
-                spans.extend(header_layer(PULP_RIGHT[i], header_style(), shadow(SLATE_300)));
+                spans.extend(header_layer(
+                    PULP_RIGHT[i],
+                    header_style(),
+                    shadow(SLATE_300),
+                ));
                 Line::from(spans)
             })
             .collect();
@@ -263,16 +262,27 @@ fn render(app: &App, frame: &mut Frame) {
             height: card_height,
         };
 
-        // Background fill (backgroundElement)
-        let fill = " ".repeat(card_width as usize);
-        let bg_lines: Vec<Line> = (0..card_height as usize)
-            .map(|_| Line::from(Span::styled(fill.as_str(), Style::default().bg(PAGE_BG))))
-            .collect();
-        frame.render_widget(Paragraph::new(bg_lines), card_area);
+        // Panel fill (backgroundElement) — starts a column in from the accent
+        // strip, so the strip reads as detached (opencode: paddingLeft=2).
+        if card_width > 1 {
+            let fill = " ".repeat((card_width - 1) as usize);
+            let bg_lines: Vec<Line> = (0..card_height as usize)
+                .map(|_| Line::from(Span::styled(fill.as_str(), Style::default().bg(BG_ELEMENT))))
+                .collect();
+            frame.render_widget(
+                Paragraph::new(bg_lines),
+                Rect {
+                    x: card_area.x + 1,
+                    y: card_area.y,
+                    width: card_width - 1,
+                    height: card_height,
+                },
+            );
+        }
 
-        // Left border
+        // Left border — accent strip on the page background (opencode agent accent)
         let border_lines: Vec<Line> = (0..card_height as usize)
-            .map(|_| Line::from(Span::styled("┃", Style::default().fg(CYAN).add_modifier(Modifier::BOLD))))
+            .map(|_| Line::from(Span::styled("┃", Style::default().fg(ACCENT))))
             .collect();
         frame.render_widget(
             Paragraph::new(border_lines),
@@ -298,7 +308,7 @@ fn render(app: &App, frame: &mut Frame) {
                 height: 1,
             };
             let prompt_line = Line::from(vec![
-                Span::styled("▌ ", accent_bold()),
+                Span::styled(" ", Style::default().bg(WHITE)),
                 Span::styled("Ask anything… or choose an operation", muted()),
             ]);
             frame.render_widget(Paragraph::new(prompt_line), prompt_area);
@@ -309,7 +319,9 @@ fn render(app: &App, frame: &mut Frame) {
                 width: inner.width,
                 height: 1,
             };
-            let shorts = ["Compress", "Merge", "Split", "Remove", "Extract", "Password", "Info"];
+            let shorts = [
+                "Compress", "Merge", "Split", "Remove", "Extract", "Password", "Info",
+            ];
             let mut spans: Vec<Span> = vec![Span::raw("  ")];
             for (idx, title) in shorts.iter().enumerate() {
                 if idx > 0 {
@@ -349,7 +361,7 @@ fn render(app: &App, frame: &mut Frame) {
         y += hint_h + 2;
     }
 
-    // Tip — centered, cyan bullet
+    // Tip — centered, opencode-style `● Tip` in warning
     if y + tip_h <= content_area.y + content_area.height {
         let tip_area = Rect {
             x: content_area.x,
@@ -358,8 +370,10 @@ fn render(app: &App, frame: &mut Frame) {
             height: tip_h,
         };
         let tip = Line::from(vec![
-            Span::styled("• ", accent_bold()),
-            Span::styled("Tip: ", muted_bold()),
+            Span::styled(
+                "● Tip ",
+                Style::default().fg(WARNING).add_modifier(Modifier::BOLD),
+            ),
             Span::styled(
                 "Drag and drop a PDF file or pass a path as an argument",
                 muted(),
@@ -374,13 +388,7 @@ fn render(app: &App, frame: &mut Frame) {
 
 fn split_content_and_footer(area: Rect) -> (Rect, Rect) {
     if area.height <= 1 {
-        return (
-            Rect {
-                height: 0,
-                ..area
-            },
-            area,
-        );
+        return (Rect { height: 0, ..area }, area);
     }
     let footer = Rect {
         x: area.x,
@@ -460,13 +468,7 @@ fn git_branch_for_cwd() -> Option<String> {
     let content = std::fs::read_to_string(head).ok()?;
     let content = content.trim();
     if let Some(ref_path) = content.strip_prefix("ref: ") {
-        return Some(
-            ref_path
-                .rsplit('/')
-                .next()
-                .unwrap_or(ref_path)
-                .to_string(),
-        );
+        return Some(ref_path.rsplit('/').next().unwrap_or(ref_path).to_string());
     }
     if content.len() >= 7 && content.chars().all(|c| c.is_ascii_hexdigit()) {
         return Some(content[..7].to_string());

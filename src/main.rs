@@ -30,6 +30,6 @@ fn run() -> error::Result<()> {
             println!();
             Ok(())
         }
-        None => tui::run(),
+        None => tui::run(cli.theme.as_deref()),
     }
 }

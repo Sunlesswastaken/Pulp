@@ -1,13 +1,13 @@
 use std::time::Duration;
 
+use ratatui::DefaultTerminal;
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::layout::Rect;
-use ratatui::DefaultTerminal;
 
 use crate::error::Result;
 
 use super::components::footer as app_footer;
-use super::screens::{HomeScreen, OperationScreen, Screen, Transition};
+use super::screens::{HomeScreen, OperationScreen, Screen, ThemePickerScreen, Transition};
 
 /// Poll interval for input events; short enough to stay responsive,
 /// long enough to keep the CPU quiet.
@@ -56,6 +56,7 @@ impl App {
         match &self.screen {
             Screen::Home => self.home.render(frame, content_area),
             Screen::Operation(screen) => screen.render(frame, content_area),
+            Screen::ThemePicker(screen) => screen.render(frame, content_area),
         }
 
         // Global footer is always visible, regardless of screen.
@@ -83,12 +84,16 @@ impl App {
         let transition = match &mut self.screen {
             Screen::Home => self.home.on_key(key),
             Screen::Operation(screen) => screen.on_key(key),
+            Screen::ThemePicker(screen) => screen.on_key(key),
         };
 
         match transition {
             Some(Transition::Quit) => self.should_quit = true,
             Some(Transition::Open(operation)) => {
                 self.screen = Screen::Operation(OperationScreen::new(operation))
+            }
+            Some(Transition::PickTheme) => {
+                self.screen = Screen::ThemePicker(ThemePickerScreen::new())
             }
             Some(Transition::Back) => self.screen = Screen::Home,
             None => {}
@@ -102,13 +107,7 @@ fn split_content_and_footer(area: Rect) -> (Rect, Rect) {
     }
     if area.height == 1 {
         // No room for content — footer takes the only line.
-        return (
-            Rect {
-                height: 0,
-                ..area
-            },
-            area,
-        );
+        return (Rect { height: 0, ..area }, area);
     }
     let footer = Rect {
         x: area.x,
@@ -129,8 +128,8 @@ fn split_content_and_footer(area: Rect) -> (Rect, Rect) {
 mod tests {
     use super::*;
     use crate::core::operation::Operation;
-    use ratatui::backend::TestBackend;
     use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
 
     fn rendered(app: &App) -> String {
         // Use a tall enough backend so the vertically-centered stack (header 6
@@ -160,15 +159,12 @@ mod tests {
             text.contains("Ask anything") || text.contains("Select action"),
             "home screen missing prompt text"
         );
-        assert!(text.contains('·'), "home screen missing `·` separator in horizontal menu");
+        assert!(
+            text.contains('·'),
+            "home screen missing `·` separator in horizontal menu"
+        );
         for expected in [
-            "Compress",
-            "Merge",
-            "Split",
-            "Remove",
-            "Extract",
-            "Password",
-            "Info",
+            "Compress", "Merge", "Split", "Remove", "Extract", "Password", "Info",
         ] {
             assert!(text.contains(expected), "home screen missing `{expected}`");
         }
@@ -180,7 +176,10 @@ mod tests {
         let text = rendered(&app);
         // New menu shows `↑↓ select  enter run` right-aligned under the card
         for expected in ["select", "run"] {
-            assert!(text.contains(expected), "home screen missing hint `{expected}`");
+            assert!(
+                text.contains(expected),
+                "home screen missing hint `{expected}`"
+            );
         }
     }
 
@@ -206,6 +205,49 @@ mod tests {
     }
 
     #[test]
+    fn typing_writes_into_the_prompt_box() {
+        let mut app = App::new();
+        for c in "rem".chars() {
+            app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        let text = rendered(&app);
+        // Typed text is echoed into the box.
+        assert!(text.contains("rem"), "typed text not visible in prompt box");
+        // Filtering narrows the menu to matching operations only.
+        assert!(text.contains("Remove"), "filtered menu should show Remove");
+        assert!(!text.contains("Merge"), "filtered menu should hide Merge");
+    }
+
+    #[test]
+    fn backspace_edits_the_prompt_box() {
+        let mut app = App::new();
+        for c in "co".chars() {
+            app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        app.handle_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
+        let text = rendered(&app);
+        assert!(text.contains('c'), "expected 'c' after backspace");
+        assert!(
+            !text.contains("co"),
+            "expected 'o' to be removed by backspace"
+        );
+    }
+
+    #[test]
+    fn search_match_opens_on_enter() {
+        let mut app = App::new();
+        for c in "pas".chars() {
+            app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        // "pas" matches Password; Enter opens it directly.
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        match &app.screen {
+            Screen::Operation(s) => assert_eq!(s.operation, Operation::Password),
+            _ => panic!("expected Password operation screen after search + Enter"),
+        }
+    }
+
+    #[test]
     fn operation_screen_shows_breadcrumb_and_status() {
         let mut app = App::new();
         app.screen = Screen::Operation(OperationScreen::new(Operation::Compress));
@@ -227,35 +269,11 @@ mod tests {
     #[test]
     fn q_quits_from_home() {
         let mut app = App::new();
-        app.handle_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE));
+        // In opencode, the home prompt is a text box — typed chars go into
+        // it, so quit is Ctrl+C/Esc instead of bare `q`.
+        app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
         assert!(app.should_quit);
     }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
     #[test]
     fn keyboard_navigation_wraps() {
@@ -268,5 +286,44 @@ mod tests {
             Screen::Operation(s) => assert_eq!(s.operation, Operation::Info),
             _ => panic!("expected Info operation screen after wrap-around Up + Enter"),
         }
+    }
+
+    #[test]
+    fn ctrl_t_opens_theme_picker() {
+        let mut app = App::new();
+        app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL));
+        assert!(
+            matches!(app.screen, Screen::ThemePicker(_)),
+            "expected theme picker after Ctrl+T"
+        );
+    }
+
+    #[test]
+    fn picker_esc_returns_home_without_changing_theme() {
+        let mut app = App::new();
+        app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL));
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(matches!(app.screen, Screen::Home));
+    }
+
+    #[test]
+    fn picker_enter_closes_and_returns_home() {
+        // Registry is uninitialised in unit tests, so the picker lists only
+        // the bundled opencode default; Enter applies it and returns home.
+        let mut app = App::new();
+        app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL));
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(matches!(app.screen, Screen::Home));
+    }
+
+    #[test]
+    fn theme_picker_renders_theme_names() {
+        let mut app = App::new();
+        app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL));
+        let text = rendered(&app);
+        assert!(
+            text.contains("opencode"),
+            "pick contained `{text:?}`, expected at least `opencode`"
+        );
     }
 }

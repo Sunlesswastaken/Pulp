@@ -9,6 +9,7 @@ mod components;
 mod screens;
 mod theme;
 
-pub fn run() -> crate::error::Result<()> {
+pub fn run(theme: Option<&str>) -> crate::error::Result<()> {
+    crate::tui::theme::init(theme);
     app::run()
 }

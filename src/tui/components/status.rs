@@ -1,7 +1,8 @@
+use ratatui::Frame;
 use ratatui::layout::Rect;
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
-use ratatui::Frame;
 
 use crate::tui::theme;
 
@@ -22,23 +23,37 @@ pub struct Status {
 
 impl Status {
     pub fn info(message: impl Into<String>) -> Self {
-        Self { kind: StatusKind::Info, message: message.into() }
+        Self {
+            kind: StatusKind::Info,
+            message: message.into(),
+        }
     }
 
     #[allow(dead_code)] // used by operation completion/error screens (next phase)
     pub fn success(message: impl Into<String>) -> Self {
-        Self { kind: StatusKind::Success, message: message.into() }
+        Self {
+            kind: StatusKind::Success,
+            message: message.into(),
+        }
     }
 
     #[allow(dead_code)] // used by operation error screens (next phase)
     pub fn error(message: impl Into<String>) -> Self {
-        Self { kind: StatusKind::Error, message: message.into() }
+        Self {
+            kind: StatusKind::Error,
+            message: message.into(),
+        }
     }
 
     pub fn line(&self) -> Line<'static> {
         let (symbol, style) = match self.kind {
-            StatusKind::Info => ('•', theme::accent()),
-            StatusKind::Success => ('✓', theme::accent_bold()),
+            StatusKind::Info => ('•', Style::new().fg(theme::info())),
+            StatusKind::Success => (
+                '✓',
+                Style::new()
+                    .fg(theme::success())
+                    .add_modifier(Modifier::BOLD),
+            ),
             StatusKind::Error => ('✗', theme::error()),
         };
         let mut spans = vec![Span::styled(format!("{symbol} "), style)];

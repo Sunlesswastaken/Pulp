@@ -10,6 +10,13 @@ use clap::{Parser, Subcommand};
     long_about = "A fast, native PDF toolkit.\n\nRun `pulp` with no arguments to open the interactive terminal UI, or pass a subcommand to use pulp as a plain CLI tool."
 )]
 pub struct Cli {
+    /// Theme to use for the interactive UI. Bundled choices: opencode
+    /// (default), dracula, everforest, flexoki, gruvbox, kanagawa, monokai,
+    /// nord, one-dark, palenight, rosepine, solarized, tokyonight — or any
+    /// theme JSON placed in ~/.config/pulp/themes/.
+    #[arg(long, value_name = "THEME")]
+    pub theme: Option<String>,
+
     /// Subcommand to run; omitting it opens the TUI.
     #[command(subcommand)]
     pub command: Option<Command>,
@@ -99,5 +106,18 @@ mod tests {
     #[test]
     fn unknown_subcommand_is_rejected() {
         assert!(Cli::try_parse_from(["pulp", "squash"]).is_err());
+    }
+
+    #[test]
+    fn theme_flag_parses() {
+        let cli = Cli::try_parse_from(["pulp", "--theme", "nord"]).unwrap();
+        assert_eq!(cli.theme.as_deref(), Some("nord"));
+        assert!(cli.command.is_none());
+    }
+
+    #[test]
+    fn theme_flag_defaults_to_none() {
+        let cli = Cli::try_parse_from(["pulp"]).unwrap();
+        assert_eq!(cli.theme, None);
     }
 }

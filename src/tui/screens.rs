@@ -1,13 +1,13 @@
+use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
-use ratatui::Frame;
 
 use crate::core::operation::Operation;
 
-use super::components::{header, nav_list::NavList, status::Status};
+use super::components::{header, status::Status};
 use super::theme;
 
 /// A screen-level action that affects the app shell.
@@ -15,6 +15,7 @@ use super::theme;
 pub enum Transition {
     Quit,
     Open(Operation),
+    PickTheme,
     Back,
 }
 
@@ -23,6 +24,7 @@ pub enum Transition {
 pub enum Screen {
     Home,
     Operation(OperationScreen),
+    ThemePicker(ThemePickerScreen),
 }
 
 // ---------------------------------------------------------------------------
@@ -45,9 +47,13 @@ fn short_title(op: &Operation) -> &'static str {
 /// Render the opencode-style prompt box: left-only `┃` border in accent,
 /// filled with `backgroundElement`, content rendered inside.
 ///
-/// `box_h` must include room for the left border rows. Inner content is
-/// placed at `x + 3, y + 1` with width `box_w - 5` and height `box_h - 2`.
-/// Returns the area of the inner content region.
+/// Mirrors `prompt/index.tsx`: the accent strip is the outer box's left
+/// border on the page background, and the `backgroundElement` panel starts
+/// one column in (`paddingLeft=2`), so the strip reads as detached from the
+/// panel rather than glued to it.
+///
+/// Inner content is placed at `x + 3, y + 1` with width `box_w - 5` and
+/// height `box_h - 2`. Returns the area of the inner content region.
 fn render_prompt_box(frame: &mut Frame, box_area: Rect) -> Rect {
     let w = box_area.width as usize;
     let h = box_area.height as usize;
@@ -55,17 +61,28 @@ fn render_prompt_box(frame: &mut Frame, box_area: Rect) -> Rect {
         return box_area;
     }
 
-    // 1) Fill entire area with backgroundElement (each row = w spaces)
-    let fill: String = " ".repeat(w);
-    let bg_lines: Vec<Line> = (0..h)
-        .map(|_| Line::from(Span::styled(fill.as_str(), theme::bg_element())))
-        .collect();
-    frame.render_widget(Paragraph::new(bg_lines), box_area);
+    if w > 1 {
+        // 1) Fill the panel (cols x+1..) with backgroundElement — the accent
+        //    strip column stays on the page background, detaching the strip.
+        let fill: String = " ".repeat(w - 1);
+        let fill_area = Rect {
+            x: box_area.x + 1,
+            y: box_area.y,
+            width: box_area.width - 1,
+            height: box_area.height,
+        };
+        let bg_lines: Vec<Line> = (0..h)
+            .map(|_| Line::from(Span::styled(fill.as_str(), theme::bg_element())))
+            .collect();
+        frame.render_widget(Paragraph::new(bg_lines), fill_area);
+    }
 
-    // 2) Left border — `┃` in accent colour, one per row
-    let accent = Style::new().fg(theme::ACCENT).add_modifier(Modifier::BOLD);
+    // 2) Left border — `┃` in accent colour, one per row.
+    // Opencode: tint(theme.border, highlight(), alpha) where highlight =
+    // the agent accent; pulp has no agents, so theme.accent directly.
+    let border_style = Style::new().fg(theme::accent_color());
     let border_lines: Vec<Line> = (0..h)
-        .map(|_| Line::from(Span::styled("┃", accent.clone())))
+        .map(|_| Line::from(Span::styled("┃", border_style)))
         .collect();
     frame.render_widget(
         Paragraph::new(border_lines),
@@ -77,7 +94,7 @@ fn render_prompt_box(frame: &mut Frame, box_area: Rect) -> Rect {
         },
     );
 
-    // 3) Return inner area (padded: x+3 for left pad, y+1 for top pad)
+    // 3) Return inner area (x+1 panel start + paddingLeft=2 + paddingTop=1)
     Rect {
         x: box_area.x + 3,
         y: box_area.y + 1,
@@ -92,27 +109,129 @@ fn render_prompt_box(frame: &mut Frame, box_area: Rect) -> Rect {
 
 #[derive(Debug)]
 pub struct HomeScreen {
-    list: NavList<Operation>,
+    /// Text typed into the prompt box. Empty = show placeholder.
+    query: String,
+    /// Character offset (byte index) of the caret within `query`.
+    caret: usize,
+    /// Operations matching `query` (all when query is empty).
+    matches: Vec<Operation>,
+    /// Index of the highlighted operation within `matches`.
+    selected: usize,
 }
 
 impl HomeScreen {
     pub fn new() -> Self {
         Self {
-            list: NavList::new("PDF toolkit", Operation::ALL),
+            query: String::new(),
+            caret: 0,
+            matches: Operation::ALL.to_vec(),
+            selected: 0,
+        }
+    }
+
+    /// Case-insensitive substring match against title, slug and short name.
+    fn matches_query(query: &str, op: &Operation) -> bool {
+        let q = query.to_lowercase();
+        op.title().to_lowercase().contains(&q)
+            || op.slug().contains(&q)
+            || short_title(op).to_lowercase().contains(&q)
+    }
+
+    /// Recomputed the visible operation list from the current query and
+    /// clamps the selection so it always stays valid.
+    fn apply_query(&mut self) {
+        if self.query.is_empty() {
+            self.matches = Operation::ALL.to_vec();
+        } else {
+            self.matches = Operation::ALL
+                .iter()
+                .copied()
+                .filter(|op| Self::matches_query(&self.query, op))
+                .collect();
+        }
+        if self.selected >= self.matches.len() {
+            self.selected = self.matches.len().saturating_sub(1);
+        }
+        if self.caret > self.query.len() {
+            self.caret = self.query.len();
         }
     }
 
     pub fn on_key(&mut self, key: KeyEvent) -> Option<Transition> {
+        use ratatui::crossterm::event::KeyModifiers;
+
+        // Ctrl+T opens the theme picker before any text editing kicks in.
+        if key.code == KeyCode::Char('t') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            return Some(Transition::PickTheme);
+        }
+
         match key.code {
-            KeyCode::Down
-            | KeyCode::Right
-            | KeyCode::Char('j')
-            | KeyCode::Char('l') => self.list.select_next(),
-            KeyCode::Up | KeyCode::Left | KeyCode::Char('k') | KeyCode::Char('h') => {
-                self.list.select_previous()
+            // ── text editing ──
+            KeyCode::Char(c) if !c.is_control() => {
+                self.query.insert(self.caret, c);
+                let shift = c.len_utf8();
+                self.caret = (self.caret + shift).min(self.query.len());
+                self.apply_query();
             }
-            KeyCode::Enter => return self.list.selected().map(|op| Transition::Open(*op)),
-            KeyCode::Esc | KeyCode::Char('q') => return Some(Transition::Quit),
+            KeyCode::Backspace => {
+                if self.caret > 0 {
+                    let idx = self.query[..self.caret]
+                        .char_indices()
+                        .next_back()
+                        .map(|(i, _)| i)
+                        .unwrap_or(0);
+                    self.query.remove(idx);
+                    self.caret = idx;
+                    self.apply_query();
+                }
+            }
+            KeyCode::Delete => {
+                if self.caret < self.query.len() {
+                    self.query.remove(self.caret);
+                    self.apply_query();
+                }
+            }
+            KeyCode::Left => {
+                if self.caret > 0 {
+                    let idx = self.query[..self.caret]
+                        .char_indices()
+                        .next_back()
+                        .map(|(i, _)| i)
+                        .unwrap_or(0);
+                    self.caret = idx;
+                }
+            }
+            KeyCode::Right => {
+                if self.caret < self.query.len() {
+                    self.caret += self.query[self.caret..]
+                        .chars()
+                        .next()
+                        .map(|c| c.len_utf8())
+                        .unwrap_or(0);
+                }
+            }
+            KeyCode::Home => self.caret = 0,
+            KeyCode::End => self.caret = self.query.len(),
+            // ── navigation ──
+            KeyCode::Up => {
+                if !self.matches.is_empty() {
+                    self.selected = (self.selected + self.matches.len() - 1) % self.matches.len();
+                }
+            }
+            KeyCode::Down => {
+                if !self.matches.is_empty() {
+                    self.selected = (self.selected + 1) % self.matches.len();
+                }
+            }
+            KeyCode::Enter => {
+                return self
+                    .matches
+                    .get(self.selected)
+                    .copied()
+                    .map(Transition::Open);
+            }
+            // ── app ──
+            KeyCode::Esc => return Some(Transition::Quit),
             _ => {}
         }
         None
@@ -166,43 +285,89 @@ impl HomeScreen {
             };
             let inner = render_prompt_box(frame, box_area);
 
-            // Row 0: placeholder-like prompt
+            // Row 0: prompt input (editable) — caret shown as a block
             if inner.height >= 1 {
-                let prompt_line = Line::from(vec![
-                    Span::styled("▌ ", Style::new().fg(theme::ACCENT).add_modifier(Modifier::BOLD)),
-                    Span::styled(
+                let prompt_area = Rect {
+                    x: inner.x,
+                    y: inner.y,
+                    width: inner.width,
+                    height: 1,
+                };
+
+                // If query is empty show the placeholder, else show the typed text
+                let mut spans: Vec<Span> = vec![];
+                if self.query.is_empty() {
+                    // Block cursor (opencode: cursor color = theme.text)
+                    spans.push(Span::styled(
+                        " ",
+                        Style::new()
+                            .bg(theme::text())
+                            .fg(theme::page_bg())
+                            .add_modifier(Modifier::BOLD),
+                    ));
+                    spans.push(Span::styled(
                         "Ask anything… or choose an operation",
-                        Style::new().fg(theme::SLATE),
-                    ),
-                ]);
-                frame.render_widget(
-                    Paragraph::new(prompt_line),
-                    Rect {
-                        x: inner.x,
-                        y: inner.y,
-                        width: inner.width,
-                        height: 1,
-                    },
-                );
+                        Style::new().fg(theme::text_muted()),
+                    ));
+                } else {
+                    // Split at caret for a block cursor visualization
+                    let caret = self.caret.min(self.query.len());
+                    let (before, after) = self.query.split_at(caret);
+                    if !before.is_empty() {
+                        spans.push(Span::styled(
+                            before.to_string(),
+                            Style::new().fg(theme::text()),
+                        ));
+                    }
+                    if let Some(ch) = after.chars().next() {
+                        spans.push(Span::styled(
+                            ch.to_string(),
+                            Style::new()
+                                .bg(theme::text())
+                                .fg(theme::page_bg())
+                                .add_modifier(Modifier::BOLD),
+                        ));
+                        spans.push(Span::styled(
+                            after[ch.len_utf8()..].to_string(),
+                            Style::new().fg(theme::text()),
+                        ));
+                    } else {
+                        // Caret at end — solid text-coloured block
+                        spans.push(Span::styled(
+                            " ",
+                            Style::new()
+                                .bg(theme::text())
+                                .fg(theme::page_bg())
+                                .add_modifier(Modifier::BOLD),
+                        ));
+                    }
+                }
+                frame.render_widget(Paragraph::new(Line::from(spans)), prompt_area);
             }
 
-            // Row 1: horizontal `·` menu
+            // Row 1: horizontal `·` menu of *filtered* operations
             if inner.height >= 2 {
-                let selected = self.list.selected().copied();
                 let mut spans: Vec<Span> = vec![];
-                for (idx, op) in Operation::ALL.iter().enumerate() {
-                    if idx > 0 {
-                        spans.push(Span::styled(" · ", Style::new().fg(theme::SLATE)));
-                    }
-                    let title = short_title(op);
-                    let style = if Some(*op) == selected {
+                if self.matches.is_empty() {
+                    spans.push(Span::styled(
+                        "no matches",
                         Style::new()
-                            .fg(theme::TITLE)
-                            .add_modifier(Modifier::BOLD)
-                    } else {
-                        Style::new().fg(theme::SLATE)
-                    };
-                    spans.push(Span::styled(title, style));
+                            .fg(theme::text_muted())
+                            .add_modifier(Modifier::ITALIC),
+                    ));
+                } else {
+                    for (idx, op) in self.matches.iter().enumerate() {
+                        if idx > 0 {
+                            spans.push(Span::styled(" · ", Style::new().fg(theme::text_muted())));
+                        }
+                        let title = short_title(op);
+                        let style = if idx == self.selected {
+                            Style::new().fg(theme::text()).add_modifier(Modifier::BOLD)
+                        } else {
+                            Style::new().fg(theme::text_muted())
+                        };
+                        spans.push(Span::styled(title, style));
+                    }
                 }
                 let ops_line = Line::from(spans);
                 frame.render_widget(
@@ -221,7 +386,7 @@ impl HomeScreen {
 
         // ── Hints (right-aligned) ──
         if y + hint_h <= area.y + area.height {
-            let hint_text = "↑↓ select  enter run  q quit";
+            let hint_text = "↑↓ select  enter run  Esc quit";
             let hint_w = hint_text.len() as u16;
             let hint_x = box_x
                 .saturating_add(box_w)
@@ -234,17 +399,23 @@ impl HomeScreen {
                 height: hint_h,
             };
             let hint_line = Line::from(vec![
-                Span::styled("↑↓", Style::new().fg(theme::SLATE_300).add_modifier(Modifier::BOLD)),
-                Span::styled(" select  ", Style::new().fg(theme::SLATE)),
-                Span::styled("enter", Style::new().fg(theme::SLATE_300).add_modifier(Modifier::BOLD)),
-                Span::styled(" run  ", Style::new().fg(theme::SLATE)),
-                Span::styled("q", Style::new().fg(theme::SLATE_300).add_modifier(Modifier::BOLD)),
-                Span::styled(" quit", Style::new().fg(theme::SLATE)),
+                Span::styled(
+                    "↑↓",
+                    Style::new().fg(theme::text()).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(" select  ", Style::new().fg(theme::text_muted())),
+                Span::styled(
+                    "enter",
+                    Style::new().fg(theme::text()).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(" run  ", Style::new().fg(theme::text_muted())),
+                Span::styled(
+                    "Esc",
+                    Style::new().fg(theme::text()).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(" quit", Style::new().fg(theme::text_muted())),
             ]);
-            frame.render_widget(
-                Paragraph::new(hint_line).right_aligned(),
-                hint_area,
-            );
+            frame.render_widget(Paragraph::new(hint_line).right_aligned(), hint_area);
             y = y.saturating_add(hint_h + 2);
         }
 
@@ -257,11 +428,15 @@ impl HomeScreen {
                 height: tip_h,
             };
             let tip = Line::from(vec![
-                Span::styled("• ", Style::new().fg(theme::ACCENT).add_modifier(Modifier::BOLD)),
-                Span::styled("Tip: ", Style::new().fg(theme::SLATE).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    "● Tip ",
+                    Style::new()
+                        .fg(theme::warning())
+                        .add_modifier(Modifier::BOLD),
+                ),
                 Span::styled(
                     "Drag and drop a PDF file or pass a path as an argument",
-                    Style::new().fg(theme::SLATE),
+                    Style::new().fg(theme::text_muted()),
                 ),
             ]);
             frame.render_widget(Paragraph::new(tip).centered(), tip_area);
@@ -338,7 +513,7 @@ impl OperationScreen {
                 frame.render_widget(
                     Paragraph::new(Line::styled(
                         self.operation.title(),
-                        Style::new().fg(theme::TITLE).add_modifier(Modifier::BOLD),
+                        Style::new().fg(theme::text()).add_modifier(Modifier::BOLD),
                     )),
                     Rect {
                         x: inner.x,
@@ -352,7 +527,7 @@ impl OperationScreen {
                 frame.render_widget(
                     Paragraph::new(Line::styled(
                         self.operation.description(),
-                        Style::new().fg(theme::SLATE),
+                        Style::new().fg(theme::text_muted()),
                     )),
                     Rect {
                         x: inner.x,
@@ -389,6 +564,139 @@ impl OperationScreen {
                 .hint("esc", "back")
                 .hint("q", "quit");
             hints.render(frame, hint_area);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Theme picker — opencode-style list of themes, switchable at runtime.
+// ---------------------------------------------------------------------------
+
+#[derive(Debug)]
+pub struct ThemePickerScreen {
+    names: Vec<String>,
+    selected: usize,
+}
+
+impl ThemePickerScreen {
+    pub fn new() -> Self {
+        let names = theme::names();
+        Self { names, selected: 0 }
+    }
+
+    pub fn on_key(&mut self, key: KeyEvent) -> Option<Transition> {
+        use ratatui::crossterm::event::KeyModifiers;
+        match key.code {
+            KeyCode::Up => {
+                if !self.names.is_empty() {
+                    self.selected = (self.selected + self.names.len() - 1) % self.names.len();
+                }
+            }
+            KeyCode::Down => {
+                if !self.names.is_empty() {
+                    self.selected = (self.selected + 1) % self.names.len();
+                }
+            }
+            KeyCode::Char('t') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                if let Some(name) = self.names.get(self.selected) {
+                    theme::set_active(name);
+                }
+                return Some(Transition::Back);
+            }
+            KeyCode::Enter => {
+                if let Some(name) = self.names.get(self.selected) {
+                    theme::set_active(name);
+                }
+                return Some(Transition::Back);
+            }
+            KeyCode::Esc | KeyCode::Char('q') => return Some(Transition::Back),
+            _ => {}
+        }
+        None
+    }
+
+    pub fn render(&self, frame: &mut Frame, area: Rect) {
+        if area.height == 0 || area.width == 0 {
+            return;
+        }
+
+        let list_w: u16 = 46.min(area.width.saturating_sub(4));
+        let rows = self.names.len() as u16;
+        let box_h = (rows + 3).min(area.height.saturating_sub(2)); // title + list + pad
+
+        let box_x = area.x + (area.width.saturating_sub(list_w)) / 2;
+        let stack_h = box_h.saturating_add(1).saturating_add(1);
+        let start_y = if area.height > stack_h {
+            area.y + (area.height - stack_h) / 2
+        } else {
+            area.y
+        };
+
+        let box_area = Rect {
+            x: box_x,
+            y: start_y,
+            width: list_w,
+            height: box_h,
+        };
+        let inner = render_prompt_box(frame, box_area);
+
+        // Title row
+        if inner.height >= 1 {
+            frame.render_widget(
+                Paragraph::new(Line::styled(
+                    "theme",
+                    Style::new().fg(theme::text()).add_modifier(Modifier::BOLD),
+                )),
+                Rect {
+                    x: inner.x,
+                    y: inner.y,
+                    width: inner.width,
+                    height: 1,
+                },
+            );
+        }
+
+        // Theme rows with a small colour swatch
+        let list_top = inner.y + 1;
+        let visible = inner.height.saturating_sub(1) as usize;
+        for (i, name) in self.names.iter().enumerate() {
+            if i >= visible {
+                break;
+            }
+            let selected = i == self.selected;
+            let mut spans: Vec<Span> = vec![];
+            spans.push(Span::styled(
+                if selected { "›" } else { " " },
+                if selected {
+                    theme::accent().add_modifier(Modifier::BOLD)
+                } else {
+                    Style::new()
+                },
+            ));
+            spans.push(Span::raw(" "));
+            if let Some(t) = theme::get(name) {
+                spans.push(Span::styled("███", Style::new().fg(t.accent)));
+                spans.push(Span::styled(" ", Style::new()));
+                spans.push(Span::styled("███", Style::new().fg(t.primary)));
+                spans.push(Span::styled(" ", Style::new()));
+            }
+            spans.push(Span::styled(
+                name.clone(),
+                if selected {
+                    theme::accent_bold()
+                } else {
+                    Style::new().fg(theme::text_muted())
+                },
+            ));
+            frame.render_widget(
+                Paragraph::new(Line::from(spans)),
+                Rect {
+                    x: inner.x,
+                    y: list_top + i as u16,
+                    width: inner.width,
+                    height: 1,
+                },
+            );
         }
     }
 }

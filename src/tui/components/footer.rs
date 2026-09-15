@@ -1,10 +1,10 @@
 use std::env;
 use std::path::{Path, PathBuf};
 
+use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
-use ratatui::Frame;
 
 use crate::tui::theme;
 
@@ -187,6 +187,7 @@ impl HintBar {
 }
 
 /// Legacy alias — `Footer` was previously the hint bar. Keep it compiling.
+#[allow(dead_code)]
 pub type Footer = HintBar;
 
 /// Legacy helper: indented() was used to inset hint bar — now centred.
